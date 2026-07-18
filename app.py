@@ -12,9 +12,18 @@ import streamlit as st
 
 APP_DIR = Path(__file__).resolve().parent
 MODEL_DIR = APP_DIR / "trained_models"
-EMAIL_MODEL_PATH = MODEL_DIR / "best_email_security_model.joblib"
-PHISHING_MODEL_PATH = MODEL_DIR / "best_phishing_website_model.joblib"
-RESULTS_PATH = MODEL_DIR / "model_performance_results.csv"
+
+
+def resolve_artifact(filename: str) -> Path:
+    """Support both the preferred model folder and root-level GitHub uploads."""
+    preferred_path = MODEL_DIR / filename
+    root_path = APP_DIR / filename
+    return preferred_path if preferred_path.exists() else root_path
+
+
+EMAIL_MODEL_PATH = resolve_artifact("best_email_security_model.joblib")
+PHISHING_MODEL_PATH = resolve_artifact("best_phishing_website_model.joblib")
+RESULTS_PATH = resolve_artifact("model_performance_results.csv")
 
 
 st.set_page_config(
@@ -361,4 +370,3 @@ else:
         intelligence, or professional incident response.
         """
     )
-
