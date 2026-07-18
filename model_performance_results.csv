@@ -1,0 +1,5 @@
+Dataset,Model,Accuracy,Precision,Recall,F1 Score
+Cyber Email Classification,Email Logistic Regression,1.0,1.0,1.0,1.0
+Cyber Email Classification,Email SGD Classifier,1.0,1.0,1.0,1.0
+UCI Phishing Websites 327,Logistic Regression,1.0,1.0,1.0,1.0
+UCI Phishing Websites 327,Random Forest,1.0,1.0,1.0,1.0
