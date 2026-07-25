@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+from anomaly_detection import AnomalyResult, analyze_email_anomaly, score_tabular_batch
+
 
 APP_DIR = Path(__file__).resolve().parent
 MODEL_DIR = APP_DIR / "trained_models"
@@ -156,6 +158,51 @@ def render_prediction(label: Any, confidence: float | None, scores: dict[str, fl
         )
 
 
+def classifier_threat_score(
+    prediction: Any,
+    confidence: float | None,
+    scores: dict[str, float],
+) -> float:
+    """Estimate supervised threat support without treating anomaly as probability."""
+    if scores:
+        risky_score = sum(score for label, score in scores.items() if is_risky_label(label))
+        if risky_score > 0:
+            return float(min(max(risky_score, 0.0), 1.0))
+    if confidence is None:
+        return 1.0 if is_risky_label(prediction) else 0.0
+    return float(confidence if is_risky_label(prediction) else 1 - confidence)
+
+
+def render_anomaly_analysis(
+    result: AnomalyResult,
+    classifier_score: float | None = None,
+) -> None:
+    st.subheader("Predictive anomaly-risk analysis")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Anomaly percentile", f"{result.percentile:.1f}th")
+    col2.metric("Anomaly risk", result.risk_level)
+    col3.metric("Outlier status", "Outlier" if result.is_outlier else "Within baseline")
+
+    if classifier_score is not None:
+        combined_score = 0.65 * classifier_score + 0.35 * result.risk_score
+        combined_level = (
+            "Critical" if combined_score >= 0.85 else
+            "High" if combined_score >= 0.65 else
+            "Elevated" if combined_score >= 0.40 else
+            "Low"
+        )
+        st.metric("Combined threat score", f"{combined_score:.1%}", combined_level)
+
+    st.markdown("**Behavioral indicators**")
+    for indicator in result.indicators:
+        st.markdown(f"- {indicator}")
+
+    st.caption(
+        "The anomaly percentile measures how unusual this message is compared with the "
+        "reference baseline; it is not an attack probability or a forecast of a future event."
+    )
+
+
 def model_status_card(name: str, model: Any, filename: str) -> None:
     if model is None:
         st.error(f"{name}: model missing")
@@ -171,7 +218,7 @@ performance_results = load_results(RESULTS_PATH)
 
 with st.sidebar:
     st.markdown("## 🛡️ CyberShield AI")
-    st.caption("Email and phishing threat detection")
+    st.caption("Classification and predictive anomaly-risk detection")
     page = st.radio(
         "Navigation",
         ["Overview", "Email detector", "Website detector", "Model performance", "About"],
@@ -180,7 +227,8 @@ with st.sidebar:
     st.markdown("#### System status")
     model_status_card("Email detector", email_model, EMAIL_MODEL_PATH.name)
     model_status_card("Website detector", phishing_model, PHISHING_MODEL_PATH.name)
-    st.caption("Prepared by Yisa R. O. Adams")
+    st.success("Anomaly-risk engine: ready")
+    st.caption("Developed and maintained by Yisa R. O. Adams")
 
 
 if page == "Overview":
@@ -188,8 +236,8 @@ if page == "Overview":
         """
         <div class="hero">
           <h1>CyberShield AI</h1>
-          <p>An explainable machine-learning dashboard for suspicious-email classification
-          and engineered phishing-feature detection.</p>
+          <p>An explainable hybrid machine-learning dashboard for phishing classification,
+          behavioral anomaly-risk detection, and engineered website-feature analysis.</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -208,7 +256,7 @@ if page == "Overview":
         )
     with col3:
         st.markdown(
-            '<div class="metric-card"><h3>Model evidence</h3><p>Review accuracy, precision, recall, and F1 results saved during training.</p></div>',
+            '<div class="metric-card"><h3>Anomaly risk</h3><p>Use Isolation Forest to surface unusual email behavior and batch-level website outliers.</p></div>',
             unsafe_allow_html=True,
         )
 
@@ -248,6 +296,9 @@ elif page == "Email detector":
                 prediction = email_model.predict([combined_text])[0]
                 confidence, scores = model_score(email_model, [combined_text], prediction)
             render_prediction(prediction, confidence, scores)
+            anomaly_result = analyze_email_anomaly(combined_text)
+            supervised_risk = classifier_threat_score(prediction, confidence, scores)
+            render_anomaly_analysis(anomaly_result, supervised_risk)
 
     with st.expander("Try a safe demonstration message"):
         st.code("Subject: Project meeting\nHi team, our project meeting is Thursday at 10 AM. Please confirm availability.")
@@ -299,6 +350,14 @@ elif page == "Website detector":
                     output["Prediction_Confidence"] = probabilities.max(axis=1)
 
                 output["Risk_Flag"] = ["Threat" if is_risky_label(x) else "No threat" for x in predictions]
+
+                try:
+                    anomaly_output = score_tabular_batch(model_input)
+                    for column in anomaly_output.columns:
+                        output[column] = anomaly_output[column].to_numpy()
+                except ValueError as exc:
+                    st.info(f"Batch anomaly scoring skipped: {exc}")
+
                 threat_count = int((output["Risk_Flag"] == "Threat").sum())
 
                 m1, m2, m3 = st.columns(3)
@@ -361,9 +420,11 @@ else:
 
         1. NLP email classification using TF-IDF and a linear classifier.
         2. Structured phishing-website classification using preprocessed UCI-style features.
+        3. Isolation Forest anomaly-risk analysis for email behavior and relative website-batch outliers.
 
-        The application provides interactive predictions, confidence visualization, batch CSV
-        scanning, downloadable results, model-performance reporting, and missing-model diagnostics.
+        The application provides interactive predictions, confidence visualization, anomaly
+        percentiles, batch CSV scanning, downloadable results, model-performance reporting,
+        and missing-model diagnostics.
 
         **Important:** This application is educational and provides decision support. It is not a
         substitute for endpoint protection, secure email gateways, browser isolation, threat
