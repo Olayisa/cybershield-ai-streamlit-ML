@@ -100,7 +100,8 @@ def get_secret(name: str) -> str | None:
     """Read deployment secrets without making local development fail."""
     try:
         value = st.secrets[name]
-    except (KeyError, FileNotFoundError):
+    except Exception:
+        # Streamlit raises a framework-specific error when no secrets file exists.
         value = os.getenv(name)
     return str(value).strip() if value else None
 
