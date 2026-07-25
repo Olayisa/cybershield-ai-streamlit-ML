@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,11 @@ import pandas as pd
 import streamlit as st
 
 from anomaly_detection import AnomalyResult, analyze_email_anomaly, score_tabular_batch
+from transformer_detection import (
+    TransformerDetectionError,
+    TransformerResult,
+    analyze_email_with_transformer,
+)
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -88,6 +94,15 @@ def load_results(path: Path) -> pd.DataFrame | None:
     if not path.exists():
         return None
     return pd.read_csv(path)
+
+
+def get_secret(name: str) -> str | None:
+    """Read deployment secrets without making local development fail."""
+    try:
+        value = st.secrets[name]
+    except (KeyError, FileNotFoundError):
+        value = os.getenv(name)
+    return str(value).strip() if value else None
 
 
 def model_score(model: Any, X: Any, prediction: Any) -> tuple[float | None, dict[str, float]]:
@@ -173,9 +188,26 @@ def classifier_threat_score(
     return float(confidence if is_risky_label(prediction) else 1 - confidence)
 
 
+def render_transformer_analysis(result: TransformerResult) -> None:
+    st.subheader("Transformer contextual analysis")
+    col1, col2 = st.columns(2)
+    col1.metric("Transformer verdict", result.label)
+    col2.metric("Transformer confidence", f"{result.confidence:.1%}")
+
+    score_frame = pd.DataFrame(
+        {"Class": list(result.scores.keys()), "Score": list(result.scores.values())}
+    ).sort_values("Score", ascending=False)
+    st.bar_chart(score_frame.set_index("Class"), horizontal=True)
+    st.caption(
+        f"Hosted model: {result.model_id}. Transformer output is decision support "
+        "and should be interpreted with the trained ML and anomaly results."
+    )
+
+
 def render_anomaly_analysis(
     result: AnomalyResult,
     classifier_score: float | None = None,
+    transformer_score: float | None = None,
 ) -> None:
     st.subheader("Predictive anomaly-risk analysis")
     col1, col2, col3 = st.columns(3)
@@ -184,7 +216,14 @@ def render_anomaly_analysis(
     col3.metric("Outlier status", "Outlier" if result.is_outlier else "Within baseline")
 
     if classifier_score is not None:
-        combined_score = 0.65 * classifier_score + 0.35 * result.risk_score
+        if transformer_score is None:
+            combined_score = 0.65 * classifier_score + 0.35 * result.risk_score
+        else:
+            combined_score = (
+                0.45 * classifier_score
+                + 0.35 * transformer_score
+                + 0.20 * result.risk_score
+            )
         combined_level = (
             "Critical" if combined_score >= 0.85 else
             "High" if combined_score >= 0.65 else
@@ -214,6 +253,7 @@ def model_status_card(name: str, model: Any, filename: str) -> None:
 email_model = load_model(EMAIL_MODEL_PATH)
 phishing_model = load_model(PHISHING_MODEL_PATH)
 performance_results = load_results(RESULTS_PATH)
+hf_token = get_secret("HF_TOKEN")
 
 
 with st.sidebar:
@@ -228,6 +268,10 @@ with st.sidebar:
     model_status_card("Email detector", email_model, EMAIL_MODEL_PATH.name)
     model_status_card("Website detector", phishing_model, PHISHING_MODEL_PATH.name)
     st.success("Anomaly-risk engine: ready")
+    if hf_token:
+        st.success("Transformer detector: ready")
+    else:
+        st.warning("Transformer detector: add HF_TOKEN")
     st.caption("Developed and maintained by Yisa R. O. Adams")
 
 
@@ -236,8 +280,8 @@ if page == "Overview":
         """
         <div class="hero">
           <h1>CyberShield AI</h1>
-          <p>An explainable hybrid machine-learning dashboard for phishing classification,
-          behavioral anomaly-risk detection, and engineered website-feature analysis.</p>
+          <p>An explainable hybrid AI dashboard combining phishing classification,
+          transformer context analysis, behavioral anomaly risk, and website-feature detection.</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -296,9 +340,32 @@ elif page == "Email detector":
                 prediction = email_model.predict([combined_text])[0]
                 confidence, scores = model_score(email_model, [combined_text], prediction)
             render_prediction(prediction, confidence, scores)
+
+            transformer_risk = None
+            if hf_token:
+                try:
+                    with st.spinner("Running DistilBERT contextual analysis…"):
+                        transformer_result = analyze_email_with_transformer(
+                            combined_text,
+                            hf_token,
+                        )
+                    render_transformer_analysis(transformer_result)
+                    transformer_risk = transformer_result.risk_score
+                except TransformerDetectionError as exc:
+                    st.warning(str(exc))
+            else:
+                st.info(
+                    "Transformer analysis is optional. Add HF_TOKEN to Streamlit "
+                    "secrets to activate the hosted DistilBERT detector."
+                )
+
             anomaly_result = analyze_email_anomaly(combined_text)
             supervised_risk = classifier_threat_score(prediction, confidence, scores)
-            render_anomaly_analysis(anomaly_result, supervised_risk)
+            render_anomaly_analysis(
+                anomaly_result,
+                supervised_risk,
+                transformer_risk,
+            )
 
     with st.expander("Try a safe demonstration message"):
         st.code("Subject: Project meeting\nHi team, our project meeting is Thursday at 10 AM. Please confirm availability.")
@@ -421,6 +488,7 @@ else:
         1. NLP email classification using TF-IDF and a linear classifier.
         2. Structured phishing-website classification using preprocessed UCI-style features.
         3. Isolation Forest anomaly-risk analysis for email behavior and relative website-batch outliers.
+        4. Optional hosted DistilBERT contextual classification for phishing emails and URLs.
 
         The application provides interactive predictions, confidence visualization, anomaly
         percentiles, batch CSV scanning, downloadable results, model-performance reporting,
